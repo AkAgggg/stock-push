@@ -109,12 +109,15 @@ def analyze_holding(code, name, data):
         advice = "止损"
 
     # 计算当日最大盈利/亏损
-    if data["open"] < price:
-        profit = round((price - data["open"]) / data["open"] * 100, 1)
-        profit_info = f"📈 买在最低可赚 {profit}%"
+    if data["open"] and data["open"] > 0:
+        if data["open"] < price:
+            profit = round((price - data["open"]) / data["open"] * 100, 1)
+            profit_info = f"📈 买在最低可赚 {profit}%"
+        else:
+            loss = round((data["open"] - price) / data["open"] * 100, 1)
+            profit_info = f"📉 买在最高亏 {loss}%"
     else:
-        loss = round((data["open"] - price) / data["open"] * 100, 1)
-        profit_info = f"📉 买在最高亏 {loss}%"
+        profit_info = ""
 
     return f"""【{name}】{emoji}
 ━━━━━━━━━━━━━━━━
