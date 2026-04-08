@@ -1,18 +1,137 @@
 """
-股票操作建议推送脚本 v6.0 - 激进资金明确版
-每次推送都给出明确的激进资金动态
+股票操作建议推送脚本 v7.0 - 回测优化版
+每次推送都记录推荐，并追踪结果自动优化策略
 """
 
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 import sys
 import io
+import json
+import os
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
+# 导入回测系统
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    from backtest_system import BacktestSystem
+    HAS_BACKTEST = True
+except:
+    HAS_BACKTEST = False
+
 # ============ 配置 ============
 SEND_KEY = "SCT334455TmE1WOH5QWyW2WU61yptgszVi"
+
+# 激进资金
+AGGRESSIVE_MONEY = 30000
+
+# 初始化回测系统
+backtest = BacktestSystem() if HAS_BACKTEST else None
+
+# 当前推荐的股票（用于追踪）
+current_recommendations = []
+
+def record_recommendation(name, code, data, action, reason, report_type):
+    """记录推荐到回测系统"""
+    global current_recommendations
+    if not backtest or not data:
+        return None
+    
+    rec_id = backtest.add_recommendation(
+        stock_code=code,
+        stock_name=name,
+        recommend_price=data["price"],
+        current_change=data["change_pct"],
+        strategy=f"{action}|{report_type}",
+        signal_type=action,
+        target_date=datetime.now().strftime("%Y-%m-%d")
+    )
+    
+    rec = {
+        "id": rec_id,
+        "name": name,
+        "code": code,
+        "price": data["price"],
+        "action": action,
+        "reason": reason,
+        "report_type": report_type
+    }
+    current_recommendations.append(rec)
+    return rec_id
+
+def get_strategy_advice():
+    """获取基于回测的策略建议"""
+    if not backtest:
+        return None
+    
+    optimized = backtest.get_optimized_strategy()
+    
+    if "error" in optimized or optimized.get("total_samples", 0) < 5:
+        return None
+    
+    suggestions = optimized.get("suggestions", [])
+    if not suggestions:
+        return None
+    
+    advice = []
+    advice.append("")
+    advice.append("━━━━━━━━━━━━━━━━━━━━━━━")
+    advice.append("📊 【历史回测优化建议】")
+    advice.append("━━━━━━━━━━━━━━━━━━━━━━━")
+    advice.append("")
+    
+    for s in suggestions[:2]:
+        advice.append(f"◆ {s['finding']}")
+        advice.append(f"  → {s['action']}")
+        advice.append("")
+    
+    advice.append(f"📈 当前胜率: {optimized.get('win_rate', 0)}%")
+    advice.append(f"💰 平均收益: {optimized.get('avg_profit', 0)}%")
+    advice.append("━━━━━━━━━━━━━━━━━━━━━━━")
+    
+    return "\n".join(advice)
+
+
+def track_recommendations():
+    """追踪之前推荐的股票表现"""
+    if not backtest:
+        return
+    
+    # 获取待追踪的记录
+    pending = [r for r in backtest.recommendations if r["status"] == "pending"]
+    
+    if not pending:
+        return
+    
+    today = datetime.now().strftime("%Y-%m-%d")
+    
+    for rec in pending:
+        # 计算推荐过去了多少天
+        rec_date = datetime.strptime(rec.get("date", ""), "%Y-%m-%d")
+        days_passed = (datetime.now() - rec_date).days
+        
+        code = rec["stock_code"]
+        data = get_stock_price(code)
+        
+        if not data:
+            continue
+        
+        current_price = data["price"]
+        buy_price = rec.get("buy_price", current_price)
+        
+        if days_passed >= 1 and not rec.get("result_1d"):
+            change = (current_price - buy_price) / buy_price * 100
+            backtest.update_result(rec["id"], "1d", current_price, change)
+        
+        if days_passed >= 3 and not rec.get("result_3d"):
+            change = (current_price - buy_price) / buy_price * 100
+            backtest.update_result(rec["id"], "3d", current_price, change)
+        
+        if days_passed >= 5 and not rec.get("result_5d"):
+            change = (current_price - buy_price) / buy_price * 100
+            backtest.update_result(rec["id"], "5d", current_price, change)
 
 # 持仓股票
 HOLDINGS = {
@@ -121,6 +240,9 @@ def analyze_aggressive_fund(stocks_data, report_type):
                 result.append(f"  止损价: {stop_price}元 (亏3%必须卖)")
                 result.append(f"  买入数量: {shares}股 ≈ {shares*data['price']:.0f}元")
                 result.append(f"  目标涨幅: +5%卖一半")
+                
+                # 记录推荐
+                record_recommendation(name, code, data, "强势追涨", f"涨幅{data['change_pct']:.1f}%", "早盘")
         else:
             result.append("")
             result.append("❌ 【今天没有好的买入机会】")
@@ -171,6 +293,8 @@ def analyze_aggressive_fund(stocks_data, report_type):
                     shares = int(10000 / 3 / data["price"])
                     result.append(f"  建议买: {shares}股 ≈ {shares*data['price']:.0f}元")
                     result.append(f"  止损: {round(data['price']*0.97, 2)}元")
+                    # 记录超跌推荐
+                    record_recommendation(name, code, data, "超跌反弹", f"跌幅{data['change_pct']:.1f}%", "午盘")
                 else:
                     result.append(f"  → 跌的不够多，等尾盘")
         else:
@@ -238,11 +362,38 @@ def analyze_aggressive_fund(stocks_data, report_type):
         result.append("📌 核心纪律:")
         result.append("⚠️ 亏3%必须卖！不要扛单！")
         result.append("⚠️ 一天最多亏900元 (3万的3%)")
+        
+        # 添加回测统计（如果有数据）
+        if backtest:
+            stats = backtest.analyze_performance()
+            if "error" not in stats and stats.get("total_recommendations", 0) >= 5:
+                result.append("")
+                result.append("━━━━━━━━━━━━━━━━━━━━━━━")
+                result.append("📊 【策略回测数据】")
+                result.append("━━━━━━━━━━━━━━━━━━━━━━━")
+                result.append(f"  总推荐: {stats['total_recommendations']}次")
+                result.append(f"  胜率: {stats['win_rate']}%")
+                result.append(f"  平均收益: {stats['avg_profit']}%")
+                
+                # 显示按涨幅区间的胜率
+                change_stats = stats.get("change_stats", {})
+                if change_stats:
+                    result.append("")
+                    result.append("  各区间胜率:")
+                    for cat, s in change_stats.items():
+                        if s["count"] >= 2:
+                            wr = s["wins"] / s["count"] * 100
+                            avg = s["total_profit"] / s["count"]
+                            result.append(f"    {cat}: 胜率{wr:.0f}% 平均{avg:+.1f}%")
+                result.append("━━━━━━━━━━━━━━━━━━━━━━━")
 
     return "\n".join(result)
 
 def generate_report(report_type="早盘"):
     """生成完整报告"""
+    # 先追踪之前的推荐
+    track_recommendations()
+    
     now = datetime.now()
     title = f"[股票] {report_type}建议 | {now.strftime('%m月%d日 %H:%M')}"
 
