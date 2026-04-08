@@ -204,12 +204,9 @@ def analyze_holding(code, name, data):
         action = "🔴 大跌！注意！"
         detail = f"暴跌{change_pct:.1f}%，小心！\n如果继续跌破{round(price*0.97, 2)}要考虑止损"
 
-    return f"""【{name}】
-━━━━━━━━━━━━━━━━
-💰 现价: {price}元 | {change_pct:+.1f}%
-🎯 操作: {action}
-💡 {detail}
-━━━━━━━━━━━━━━━"""
+    return f"""【{name}】{price}元 {change_pct:+.1f}%
+→ {action}
+  {detail}"""
 
 def analyze_aggressive_fund(stocks_data, report_type):
     """3万激进资金 - 智能进化版"""
@@ -218,82 +215,53 @@ def analyze_aggressive_fund(stocks_data, report_type):
     
     # ========== 核心：使用智能引擎 ==========
     if smart_engine:
-        # 1. 分析市场环境
         valid_data = [d for _, _, d in stocks_data if d]
         market = smart_engine.analyze_market(valid_data)
-        
-        # 2. 智能选股
         candidates = smart_engine.select_stocks(stocks_data, market)
         recommendations = smart_engine.generate_recommendation(candidates, limit=2)
     else:
         market = "震荡"
         recommendations = []
     
-    # ========== 生成推送内容 ==========
+    # ========== 简洁推送内容 ==========
     
     if report_type == "早盘":
-        result.append("━━━━━━━━━━━━━━━━━━━━━━━")
-        result.append("【3万激进资金 - 早盘计划】")
-        result.append("━━━━━━━━━━━━━━━━━━━━━━━")
-        
-        # 显示市场判断
+        # 市场判断
         market_desc = {
-            "强势": "今天行情好，可以积极一点",
-            "弱势": "今天行情差，要谨慎",
-            "震荡": "今天行情一般，见机行事",
-            "平稳": "今天波动小，不急着操作"
+            "强势": "行情好，积极操作",
+            "弱势": "行情差，谨慎操作",
+            "震荡": "行情一般，见机行事",
+            "平稳": "波动小，少操作"
         }
-        result.append("")
-        result.append(f"📊 市场判断: {market}市")
-        result.append(f"   {market_desc.get(market, '')}")
+        result.append(f"📊 市场: {market}市 | {market_desc.get(market, '')}")
         
-        # 显示策略权重
-        if smart_engine:
-            result.append("")
-            result.append("🎯 策略参考:")
-            for s, w in smart_engine.strategy_weights.items():
-                if w != 1.0:
-                    indicator = "⬆️" if w > 1.0 else "⬇️"
-                    result.append(f"   {indicator} {s}权重: {w:.1f}")
-        
-        # 显示推荐
+        # 推荐股票
         if recommendations:
             result.append("")
-            result.append("✅ 【今天可以买这些】")
+            result.append("✅ 今日推荐买入:")
             for rec in recommendations:
-                result.append("")
-                result.append(f"◆ {rec['stock']}({rec['code']})")
-                result.append(f"  现价: {rec['current_price']}元")
-                result.append(f"  涨幅: {rec['change']:+.1f}%")
-                result.append(f"  策略: {rec['strategy']} (置信度{rec['confidence']}%)")
-                result.append(f"  ─────────────────────")
-                result.append(f"  建议买价: {rec['buy_price']}元")
-                result.append(f"  止损价: {rec['stop_loss']}元 (亏3%必须卖)")
-                result.append(f"  买入数量: {rec['shares']}股 ≈ {rec['shares']*rec['buy_price']:.0f}元")
-                result.append(f"  目标价: {rec['target']}元 (+5%卖一半)")
-                result.append(f"  理由: {rec['reason']}")
+                result.append(f"  ◆ {rec['stock']}({rec['code']}) {rec['current_price']}元 {rec['change']:+.1f}%")
+                result.append(f"    买价: {rec['buy_price']} | 止损: {rec['stop_loss']} | 买{rec['shares']}股")
+                result.append(f"    策略: {rec['strategy']} | 理由: {rec['reason']}")
                 
-                # 记录推荐
                 if backtest:
                     for _, _, d in stocks_data:
                         if d and d.get("price") == rec['current_price']:
-                            record_recommendation(rec['stock'], rec['code'], d, 
-                                                rec['strategy'], rec['reason'], "早盘")
+                            record_recommendation(rec['stock'], rec['code'], d, rec['strategy'], rec['reason'], "早盘")
                             break
         else:
-            result.append("")
-            result.append("❌ 【今天没有好的买入机会】")
-            result.append("   等待市场给出更好的机会")
+            result.append("❌ 今日暂无推荐买入机会")
         
-        # 警告不要买的
+        # 警告
         down_stocks = [(k, v, d) for k, v, d in sorted_stocks if d and d["change_pct"] < -2]
         if down_stocks:
             result.append("")
-            result.append("⚠️ 【今天不要买这些】")
+            result.append("⚠️ 不要买:")
             for name, code, data in down_stocks[:2]:
-                result.append(f"  ✗ {name} 跌{data['change_pct']:.1f}% 危险！")
-
+                result.append(f"  ✗ {name} 跌{data['change_pct']:.1f}%")
+        
         result.append("")
+        result.append("📌 规则: 亏3%必须止损 | 最多买2只各1万")
         result.append("━━━━━━━━━━━━━━━━━━━━━━━")
         result.append("📌 早盘规则:")
         result.append("1. 每只最多买1万，总共最多3万")
@@ -319,134 +287,75 @@ def analyze_aggressive_fund(stocks_data, report_type):
         
         if up_stocks:
             result.append("")
-            result.append("📈 【上午强势股 - 下午注意】")
+            result.append("📈 上午强势股:")
             for name, code, data in up_stocks[:1]:
-                result.append(f"  ◆ {name} 涨{data['change_pct']:+.1f}%")
                 if data["change_pct"] > 5:
-                    result.append("  → 涨太多了！不要追了")
-                    result.append("  → 等尾盘看会不会回调")
+                    result.append(f"  {name} 涨{data['change_pct']:+.1f}% → 不要追，等回调")
                 else:
-                    result.append("  → 如果保持到尾盘，收盘前可买")
+                    result.append(f"  {name} 涨{data['change_pct']:+.1f}% → 可尾盘轻仓")
         
         if down_stocks:
             result.append("")
-            result.append("💎 【超跌机会 - 可以轻仓】")
+            result.append("💎 超跌机会:")
             for name, code, data in down_stocks[:1]:
-                result.append(f"  ◆ {name} 跌{data['change_pct']:.1f}%")
                 if data["change_pct"] < -5:
-                    result.append(f"  ⚠️ 超跌！可以买1/3仓位")
                     shares = int(10000 / 3 / data["price"])
-                    result.append(f"  建议买: {shares}股 ≈ {shares*data['price']:.0f}元")
-                    result.append(f"  止损: {round(data['price']*0.97, 2)}元")
-                    # 记录超跌推荐
+                    result.append(f"  {name} 跌{data['change_pct']:.1f}% → 可买1/3仓")
+                    result.append(f"    建议买{shares}股 | 止损{round(data['price']*0.97, 2)}元")
                     record_recommendation(name, code, data, "超跌反弹", f"跌幅{data['change_pct']:.1f}%", "午盘")
                 else:
-                    result.append(f"  → 跌的不够多，等尾盘")
+                    result.append(f"  {name} 跌{data['change_pct']:.1f}% → 跌不够多，等")
         else:
-            result.append("")
-            result.append("📊 上午走势平稳，没有特别机会")
+            result.append("📊 走势平稳，无特别机会")
         
         if not up_stocks and not down_stocks:
-            result.append("")
-            result.append("❌ 今天不适合激进操作，观望为主")
+            result.append("❌ 今日观望为主")
 
         result.append("")
-        result.append("━━━━━━━━━━━━━━━━━━━━━━━")
-        result.append("📌 午盘规则:")
-        result.append("1. 上午涨5%+的不要追")
-        result.append("2. 跌3%+可轻仓试探")
-        result.append("3. 收盘前30分钟做决定")
+        result.append("📌 午盘规则: 涨5%+不追 | 跌3%+轻仓试 | 收盘前30分定")
 
     else:  # 收盘
-        result.append("━━━━━━━━━━━━━━━━━━━━━━━")
-        result.append("【3万激进资金 - 收盘复盘】")
-        result.append("━━━━━━━━━━━━━━━━━━━━━━━")
-        
-        # 今日总结
-        result.append("")
-        result.append("📊 今日涨跌排行:")
-        for i, (name, code, data) in enumerate(sorted_stocks, 1):
+        # 今日涨跌
+        result.append("📊 今日涨跌:")
+        for i, (name, code, data) in enumerate(sorted_stocks[:5], 1):
             if data:
                 arrow = "🔴" if data["change_pct"] > 0 else "🟢"
                 result.append(f"  {i}. {arrow} {name}: {data['change_pct']:+.1f}%")
         
-        # 计算总收益
         total = sum([d["change_pct"] for _, _, d in sorted_stocks if d])
-        result.append("")
         if total > 0:
-            result.append(f"📈 今日整体: 上涨 {total:.1f}%")
+            result.append(f"→ 整体上涨 {total:.1f}%")
         elif total < 0:
-            result.append(f"📉 今日整体: 下跌 {abs(total):.1f}%")
-        else:
-            result.append("📊 今日整体: 平盘")
+            result.append(f"→ 整体下跌 {abs(total):.1f}%")
         
         # 明日计划
-        result.append("")
-        result.append("━━━━━━━━━━━━━━━━━━━━━━━")
-        result.append("📋 明日激进计划:")
-        
-        # 选明日可能涨的
         best = sorted_stocks[0] if sorted_stocks else None
-        if best and best[2] and best[2]["change_pct"] > 0:
-            name, code, data = best
-            result.append(f"  ★ 明日重点: {name}")
-            result.append(f"    今日涨{data['change_pct']:.1f}%，明日可能继续")
-            result.append(f"    开盘观察15分钟再决定")
-        elif best and best[2] and best[2]["change_pct"] < 0:
-            name, code, data = best
-            if data["change_pct"] > -3:
-                result.append(f"  ★ 明日关注: {name}")
-                result.append(f"    今日跌{data['change_pct']:.1f}%，明日可能反弹")
-            else:
-                result.append(f"  ⚠️ {name} 跌太多了，观察为主")
-        else:
-            result.append("  明天根据开盘情况再定")
+        if best and best[2]:
+            if best[2]["change_pct"] > 0:
+                result.append(f"★ 明日重点: {best[0]} (今日涨{best[2]['change_pct']:.1f}%)")
+            elif best[2]["change_pct"] > -3:
+                result.append(f"★ 明日关注: {best[0]} (今日跌{best[2]['change_pct']:.1f}%)")
         
         result.append("")
-        result.append("━━━━━━━━━━━━━━━━━━━━━━━")
-        result.append("📌 核心纪律:")
-        result.append("⚠️ 亏3%必须卖！不要扛单！")
-        result.append("⚠️ 一天最多亏900元 (3万的3%)")
+        result.append("⚠️ 核心纪律: 亏3%必须卖！不扛单！")
         
-        # 添加回测统计（如果有数据）
+        # 回测统计
         if backtest:
             stats = backtest.analyze_performance()
-            if "error" not in stats and stats.get("total_recommendations", 0) >= 5:
-                result.append("")
-                result.append("━━━━━━━━━━━━━━━━━━━━━━━")
-                result.append("📊 【策略回测数据】")
-                result.append("━━━━━━━━━━━━━━━━━━━━━━━")
-                result.append(f"  总推荐: {stats['total_recommendations']}次")
-                result.append(f"  胜率: {stats['win_rate']}%")
-                result.append(f"  平均收益: {stats['avg_profit']}%")
-                
-                # 显示按涨幅区间的胜率
-                change_stats = stats.get("change_stats", {})
-                if change_stats:
-                    result.append("")
-                    result.append("  各区间胜率:")
-                    for cat, s in change_stats.items():
-                        if s["count"] >= 2:
-                            wr = s["wins"] / s["count"] * 100
-                            avg = s["total_profit"] / s["count"]
-                            result.append(f"    {cat}: 胜率{wr:.0f}% 平均{avg:+.1f}%")
-                result.append("━━━━━━━━━━━━━━━━━━━━━━━")
+            if "error" not in stats and stats.get("total_recommendations", 0) >= 3:
+                result.append(f"📊 策略胜率: {stats['win_rate']}% | 均收益: {stats['avg_profit']}%")
 
     return "\n".join(result)
 
 def generate_report(report_type="早盘"):
-    """生成完整报告"""
+    """生成完整报告 - 清晰简洁版"""
     # 先追踪之前的推荐
     track_recommendations()
     
     now = datetime.now()
-    title = f"[股票] {report_type}建议 | {now.strftime('%m月%d日 %H:%M')}"
+    title = f"📈 {report_type}股票建议 {now.strftime('%m/%d %H:%M')}"
 
     content = []
-    content.append("━━━━━━━━━━━━━━━━━━━━")
-    content.append(f"  【{report_type}股票操作建议】")
-    content.append(f"  时间: {now.strftime('%H:%M')}")
-    content.append("━━━━━━━━━━━━━━━━━━━━")
 
     # 获取所有持仓数据
     stocks_data = []
@@ -457,11 +366,7 @@ def generate_report(report_type="早盘"):
         time.sleep(0.3)
 
     # ===== 持仓操作建议 =====
-    content.append("")
-    content.append("━━━━━━━━━━━━━━━━━━━━")
-    content.append("【持仓股操作建议】")
-    content.append("━━━━━━━━━━━━━━━━━━━━")
-
+    content.append("━━━━━━━━ 持仓股操作 ━━━━━━━━")
     for name, code, data in stocks_data:
         analysis = analyze_holding(code, name, data)
         content.append(analysis)
@@ -469,13 +374,18 @@ def generate_report(report_type="早盘"):
     # ===== 激进资金建议 =====
     aggressive = analyze_aggressive_fund(stocks_data, report_type)
     content.append("")
-    content.append("━━━━━━━━━━━━━━━━━━━━")
-    content.append(aggressive)
+    content.append("━━━━━━━━ 3万激进资金 ━━━━━━━━")
+    # 只取关键部分，去掉冗余
+    lines = aggressive.split("\n")
+    for line in lines:
+        if "━━" in line and "3万激进资金" not in line:
+            continue
+        content.append(line)
 
     content.append("")
-    content.append("━━━━━━━━━━━━━━━━━━━━")
-    content.append("⚠️ 免责声明：本建议仅供参考，股市有风险！")
-    content.append(f"生成: {now.strftime('%Y-%m-%d %H:%M:%S')}")
+    content.append("━━━━━━━━ 风险提示 ━━━━━━━━")
+    content.append("⚠️ 股市有风险，操作需谨慎！")
+    content.append(f"生成时间: {now.strftime('%H:%M:%S')}")
 
     return title, "\n".join(content)
 
