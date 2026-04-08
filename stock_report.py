@@ -1,6 +1,6 @@
 """
-股票操作建议推送脚本 v7.0 - 回测优化版
-每次推送都记录推荐，并追踪结果自动优化策略
+股票操作建议推送脚本 v8.0 - 智能进化版
+核心：每次推送前自我学习，根据市场动态调整策略
 """
 
 import requests
@@ -13,13 +13,15 @@ import os
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
-# 导入回测系统
+# 导入智能系统
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
     from backtest_system import BacktestSystem
-    HAS_BACKTEST = True
-except:
-    HAS_BACKTEST = False
+    from smart_engine import SmartStockEngine
+    HAS_SMART = True
+except Exception as e:
+    print(f"导入智能模块失败: {e}")
+    HAS_SMART = False
 
 # ============ 配置 ============
 SEND_KEY = "SCT334455TmE1WOH5QWyW2WU61yptgszVi"
@@ -27,8 +29,9 @@ SEND_KEY = "SCT334455TmE1WOH5QWyW2WU61yptgszVi"
 # 激进资金
 AGGRESSIVE_MONEY = 30000
 
-# 初始化回测系统
-backtest = BacktestSystem() if HAS_BACKTEST else None
+# 初始化系统
+backtest = BacktestSystem() if HAS_SMART else None
+smart_engine = SmartStockEngine() if HAS_SMART else None
 
 # 当前推荐的股票（用于追踪）
 current_recommendations = []
@@ -209,45 +212,81 @@ def analyze_holding(code, name, data):
 ━━━━━━━━━━━━━━━"""
 
 def analyze_aggressive_fund(stocks_data, report_type):
-    """3万激进资金 - 明确版"""
+    """3万激进资金 - 智能进化版"""
+    result = []
     sorted_stocks = sorted(stocks_data, key=lambda x: x[2]["change_pct"] if x[2] else 0, reverse=True)
     
-    result = []
-
+    # ========== 核心：使用智能引擎 ==========
+    if smart_engine:
+        # 1. 分析市场环境
+        valid_data = [d for _, _, d in stocks_data if d]
+        market = smart_engine.analyze_market(valid_data)
+        
+        # 2. 智能选股
+        candidates = smart_engine.select_stocks(stocks_data, market)
+        recommendations = smart_engine.generate_recommendation(candidates, limit=2)
+    else:
+        market = "震荡"
+        recommendations = []
+    
+    # ========== 生成推送内容 ==========
+    
     if report_type == "早盘":
         result.append("━━━━━━━━━━━━━━━━━━━━━━━")
         result.append("【3万激进资金 - 早盘计划】")
         result.append("━━━━━━━━━━━━━━━━━━━━━━━")
         
-        # 找强势股（涨 >2%）
-        up_stocks = [(k, v, d) for k, v, d in sorted_stocks if d and d["change_pct"] > 2]
-        # 找弱势股（跌 >2%）
-        down_stocks = [(k, v, d) for k, v, d in sorted_stocks if d and d["change_pct"] < -2]
+        # 显示市场判断
+        market_desc = {
+            "强势": "今天行情好，可以积极一点",
+            "弱势": "今天行情差，要谨慎",
+            "震荡": "今天行情一般，见机行事",
+            "平稳": "今天波动小，不急着操作"
+        }
+        result.append("")
+        result.append(f"📊 市场判断: {market}市")
+        result.append(f"   {market_desc.get(market, '')}")
         
-        if up_stocks:
+        # 显示策略权重
+        if smart_engine:
+            result.append("")
+            result.append("🎯 策略参考:")
+            for s, w in smart_engine.strategy_weights.items():
+                if w != 1.0:
+                    indicator = "⬆️" if w > 1.0 else "⬇️"
+                    result.append(f"   {indicator} {s}权重: {w:.1f}")
+        
+        # 显示推荐
+        if recommendations:
             result.append("")
             result.append("✅ 【今天可以买这些】")
-            for name, code, data in up_stocks[:2]:
-                buy_price = round(data["price"] * 0.99, 2)
-                stop_price = round(data["price"] * 0.97, 2)
-                shares = int(10000 / data["price"])
+            for rec in recommendations:
                 result.append("")
-                result.append(f"◆ {name}({code})")
-                result.append(f"  现价: {data['price']}元")
-                result.append(f"  涨幅: {data['change_pct']:+.1f}%")
+                result.append(f"◆ {rec['stock']}({rec['code']})")
+                result.append(f"  现价: {rec['current_price']}元")
+                result.append(f"  涨幅: {rec['change']:+.1f}%")
+                result.append(f"  策略: {rec['strategy']} (置信度{rec['confidence']}%)")
                 result.append(f"  ─────────────────────")
-                result.append(f"  建议买价: {buy_price}元")
-                result.append(f"  止损价: {stop_price}元 (亏3%必须卖)")
-                result.append(f"  买入数量: {shares}股 ≈ {shares*data['price']:.0f}元")
-                result.append(f"  目标涨幅: +5%卖一半")
+                result.append(f"  建议买价: {rec['buy_price']}元")
+                result.append(f"  止损价: {rec['stop_loss']}元 (亏3%必须卖)")
+                result.append(f"  买入数量: {rec['shares']}股 ≈ {rec['shares']*rec['buy_price']:.0f}元")
+                result.append(f"  目标价: {rec['target']}元 (+5%卖一半)")
+                result.append(f"  理由: {rec['reason']}")
                 
                 # 记录推荐
-                record_recommendation(name, code, data, "强势追涨", f"涨幅{data['change_pct']:.1f}%", "早盘")
+                if backtest:
+                    for _, _, d in stocks_data:
+                        if d and d.get("price") == rec['current_price']:
+                            record_recommendation(rec['stock'], rec['code'], d, 
+                                                rec['strategy'], rec['reason'], "早盘")
+                            break
         else:
             result.append("")
             result.append("❌ 【今天没有好的买入机会】")
-            result.append("  原因: 没有持仓股涨幅超过2%")
+            result.append("   等待市场给出更好的机会")
         
+        # 警告不要买的
+        down_stocks = [(k, v, d) for k, v, d in sorted_stocks if d and d["change_pct"] < -2]
         if down_stocks:
             result.append("")
             result.append("⚠️ 【今天不要买这些】")
@@ -267,9 +306,15 @@ def analyze_aggressive_fund(stocks_data, report_type):
         result.append("【3万激进资金 - 午盘策略】")
         result.append("━━━━━━━━━━━━━━━━━━━━━━━")
         
-        # 找跌幅大的（可能反弹）
+        # 更新市场判断
+        if smart_engine:
+            market = smart_engine.market_status or market
+        
+        result.append("")
+        result.append(f"📊 当前市场: {market}市")
+        
+        # 找机会
         down_stocks = [(k, v, d) for k, v, d in sorted_stocks if d and d["change_pct"] < -3]
-        # 找涨幅大的（可能继续涨）
         up_stocks = [(k, v, d) for k, v, d in sorted_stocks if d and d["change_pct"] > 3]
         
         if up_stocks:
