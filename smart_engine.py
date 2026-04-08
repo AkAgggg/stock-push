@@ -1,10 +1,11 @@
 """
-智能选股引擎 v2.0
+智能选股引擎 v3.0
 核心功能：
 1. 市场环境感知 - 判断今天是强势还是弱势
 2. 动态策略权重 - 根据近期表现自动调整
 3. 多数据源切换 - 东方财富/腾讯/新浪
 4. 自我纠错 - 连续失败自动降低权重
+5. 全市场扫描 - 从涨幅榜/振幅榜/换手率榜找激进标的
 """
 
 import requests
@@ -239,6 +240,103 @@ class SmartStockEngine:
                 "reason": " + ".join(c["reasons"]),
                 "confidence": min(95, int(c["score"]))
             })
+        
+        return recommendations
+
+    def generate_recommendation_from_market(self, market_targets: list, limit: int = 2) -> list:
+        """从全市场扫描结果生成推荐
+        
+        Args:
+            market_targets: market_scanner.scan_aggressive_targets() 的结果
+            limit: 最多推荐几只
+        
+        Returns:
+            推荐列表
+        """
+        if not market_targets:
+            return []
+        
+        recommendations = []
+        
+        for stock in market_targets[:limit]:
+            name = stock.get("name", "未知")
+            code = stock.get("code", "")
+            price = stock.get("price", 0)
+            change = stock.get("change_pct", 0)
+            strategy = stock.get("strategy", "未知")
+            reason = stock.get("reason", "")
+            score = stock.get("score", 50)
+            amplitude = stock.get("amplitude", 0)
+            turnover_rate = stock.get("turnover_rate", 0)
+            
+            if price <= 0:
+                continue
+            
+            # 计算买卖价格
+            if change > 0:
+                buy_price = round(price * 0.998, 2)  # 激进追涨
+            else:
+                buy_price = round(price * 0.99, 2)  # 超跌低买
+            
+            stop_loss = round(buy_price * 0.97, 2)  # 3%止损
+            target = round(buy_price * 1.05, 2)  # 5%目标
+            shares = int(10000 / buy_price)
+            
+            # 判断操作建议
+            if change > 9.5:
+                action = "不追"
+                detail = "接近涨停，等明天"
+                priority = 0
+            elif change > 6:
+                action = "轻仓试"
+                detail = f"建议{int(shares/3)}股"
+                shares = int(shares / 3)
+                priority = 1
+            elif change > 0:
+                action = "可以买"
+                detail = f"建议{shares}股"
+                priority = 2
+            elif change > -3:
+                action = "观望"
+                detail = "等跌更多或反弹再买"
+                priority = 1
+            elif change > -6:
+                action = "超跌买"
+                detail = f"建议{shares}股抢反弹"
+                priority = 2
+            else:
+                action = "大跌注意"
+                detail = f"建议{int(shares/2)}股，止损严"
+                shares = int(shares / 2)
+                priority = 1
+            
+            recommendations.append({
+                "stock": name,
+                "code": code,
+                "current_price": price,
+                "change": change,
+                "buy_price": buy_price,
+                "stop_loss": stop_loss,
+                "target": target,
+                "shares": shares,
+                "strategy": strategy,
+                "reason": reason,
+                "action": action,
+                "detail": detail,
+                "amplitude": amplitude,
+                "turnover_rate": turnover_rate,
+                "score": score,
+                "priority": priority,
+                "confidence": min(90, int(score)),
+            })
+        
+        # 按优先级和分数排序
+        recommendations.sort(key=lambda x: (x["priority"], x["score"]), reverse=True)
+        
+        # 更新策略表现
+        for rec in recommendations:
+            if rec["priority"] >= 2:  # 真正建议买入的
+                self.update_strategy_result(rec["strategy"], 0)  # 记录推荐，等待后续更新盈亏
         
         return recommendations
 
