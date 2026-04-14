@@ -32,8 +32,8 @@ except Exception as e:
 # ============ 配置 ============
 SEND_KEY = "SCT334455TmE1WOH5QWyW2WU61yptgszVi"
 
-# 激进资金
-AGGRESSIVE_MONEY = 30000
+# 激进资金 (5-8万)
+AGGRESSIVE_MONEY = 80000
 
 # 初始化系统
 backtest = BacktestSystem() if HAS_SMART else None
@@ -130,19 +130,22 @@ def track_recommendations():
             continue
         
         current_price = data["price"]
-        buy_price = rec.get("buy_price", current_price)
-        
-        if days_passed >= 1 and not rec.get("result_1d"):
-            change = (current_price - buy_price) / buy_price * 100
-            backtest.update_result(rec["id"], "1d", current_price, change)
-        
-        if days_passed >= 3 and not rec.get("result_3d"):
-            change = (current_price - buy_price) / buy_price * 100
-            backtest.update_result(rec["id"], "3d", current_price, change)
-        
-        if days_passed >= 5 and not rec.get("result_5d"):
-            change = (current_price - buy_price) / buy_price * 100
-            backtest.update_result(rec["id"], "5d", current_price, change)
+        buy_price = rec.get("buy_price")
+        if buy_price is None:
+            buy_price = current_price
+
+        if buy_price and buy_price > 0:
+            if days_passed >= 1 and not rec.get("result_1d"):
+                change = (current_price - buy_price) / buy_price * 100
+                backtest.update_result(rec["id"], "1d", current_price, change)
+            
+            if days_passed >= 3 and not rec.get("result_3d"):
+                change = (current_price - buy_price) / buy_price * 100
+                backtest.update_result(rec["id"], "3d", current_price, change)
+            
+            if days_passed >= 5 and not rec.get("result_5d"):
+                change = (current_price - buy_price) / buy_price * 100
+                backtest.update_result(rec["id"], "5d", current_price, change)
 
 # 持仓股票
 HOLDINGS = {
@@ -155,8 +158,8 @@ HOLDINGS = {
     "斯瑞新材": "688102",
 }
 
-# 激进资金
-AGGRESSIVE_MONEY = 30000
+# 激进资金 (5-8万)
+AGGRESSIVE_MONEY = 80000
 
 def get_stock_price(code):
     """获取股票实时价格"""
@@ -353,10 +356,11 @@ def analyze_holding(code, name, data):
     return analyze_holding_flexible(code, name, data, market_index)
 
 def analyze_aggressive_fund(stocks_data, report_type):
-    """3万激进资金 - 全市场扫描版 v2.0（带仓位记忆）
+    """3万激进资金 - 全市场扫描版 v2.1（带止盈止损）
     
-    不只分析持仓股，而是从全市场找最合适的激进标的
-    每次推送前检查仓位状态，避免矛盾信号
+    每次推送前检查持仓股盈亏状态：
+    - 涨超5% → 卖出一半止盈
+    - 跌超3% → 止损
     """
     result = []
     sorted_stocks = sorted(stocks_data, key=lambda x: x[2]["change_pct"] if x[2] else 0, reverse=True)
@@ -395,8 +399,90 @@ def analyze_aggressive_fund(stocks_data, report_type):
                 for a in today_actions:
                     result.append(f"   [{a['time']}] {a['type']}: {a['detail']}")
 
-        # 使用全市场扫描器
-        if market_scanner:
+        # ========== 【重点】检查持仓股止盈/止损 ==========
+        if position_state:
+            positions = position_state.get_positions()
+            if positions:
+                result.append("")
+                result.append("🎯 【持仓股止盈止损检查】")
+                
+                has_action = False  # 标记是否有止盈/止损建议
+                for p in positions:
+                    stock_code = p["stock_code"]
+                    stock_name = p["stock_name"]
+                    buy_price = p["price"]
+                    shares = p["shares"]
+                    
+                    # 获取实时价格
+                    current_data = get_stock_price(stock_code)
+                    if not current_data:
+                        continue
+                    
+                    current_price = current_data["price"]
+                    change_pct = current_data["change_pct"]
+                    
+                    # 计算持仓盈亏（从买入价）
+                    profit_pct = (current_price - buy_price) / buy_price * 100
+                    
+                    # 止盈：涨幅超过5%
+                    if profit_pct >= 5:
+                        sell_shares = shares // 2
+                        sell_value = int(sell_shares * current_price)
+                        remain_shares = shares - sell_shares
+                        if sell_shares > 0:
+                            result.append("")
+                            result.append(f"🔥 【{stock_name}({stock_code}) 止盈！】")
+                            result.append(f"   {buy_price} → {current_price} (+{profit_pct:.1f}%)")
+                            result.append(f"   → 【卖半仓】立即卖出 {sell_shares} 股（约{sell_value}元）")
+                            result.append(f"   → 剩余 {remain_shares} 股继续持有")
+                            result.append(f"   止损位: {round(buy_price * 0.97, 2)}元")
+                            has_action = True
+                            # 记录减仓操作
+                            position_state.reduce_position(stock_code, f"止盈+{profit_pct:.1f}%")
+                    
+                    # 止损：跌幅超过3%
+                    elif profit_pct <= -3:
+                        sell_value = int(shares * current_price)
+                        loss = round((buy_price - current_price) * shares, 0)
+                        result.append("")
+                        result.append(f"🚨 【{stock_name}({stock_code}) 必须止损！】")
+                        result.append(f"   {buy_price} → {current_price} ({profit_pct:.1f}%)")
+                        result.append(f"   → 【卖全仓】立即全部卖出 {shares} 股（约{sell_value}元）")
+                        result.append(f"   → 亏损约 {int(loss)} 元")
+                        result.append(f"   ⚠️ 严格执行止损纪律！")
+                        has_action = True
+                        # 记录清仓操作
+                        position_state.close_position(stock_code, f"止损{profit_pct:.1f}%")
+                    
+                    # 正常持有
+                    else:
+                        result.append("")
+                        result.append(f"📌 {stock_name}({stock_code}) {shares}股")
+                        result.append(f"   {buy_price} → {current_price} ({profit_pct:+.1f}%)")
+                        result.append(f"   → 继续持有，止损位: {round(buy_price * 0.97, 2)}元")
+                
+                # 如果有止盈/止损动作，保存状态
+                if has_action:
+                    position_state.save()
+
+        # 使用全市场扫描器（仅在没有持仓或持仓无需操作时推荐新标的）
+        remaining_money = AGGRESSIVE_MONEY
+        if position_state:
+            positions = position_state.get_positions()
+            if positions:
+                invested = sum(p["price"] * p["shares"] for p in positions)
+                remaining_money = AGGRESSIVE_MONEY - invested
+                if remaining_money <= 0:
+                    result.append("")
+                    result.append("⚠️ 激进资金已满仓，不追新标的")
+                    result.append("")
+                    result.append("📌 激进资金节奏:")
+                    result.append("⚡ 早盘: 已建仓完毕")
+                    result.append("⏰ 午盘: 检查仓位")
+                    result.append("🌙 收盘: 复盘不动手")
+                    return "\n".join(result)
+        
+        if remaining_money >= 5000 and market_scanner:
             print("[激进资金] 开始全市场扫描...")
             market_targets = market_scanner.scan_aggressive_targets(market)
 
@@ -438,12 +524,21 @@ def analyze_aggressive_fund(stocks_data, report_type):
                     reason = t.get("reason", "")
 
                     stop_loss = round(price * 0.97, 2)
+                    buy_value = int(shares * price)
+
+                    # 价格风险提示
+                    risk_warn = ""
+                    if change >= 9:
+                        risk_warn = " ⚠️ 涨幅已高，追高风险大！"
+                    elif change >= 7:
+                        risk_warn = " ⚠️ 涨幅偏高，注意风险"
 
                     result.append("")
-                    result.append(f"#{i} {name}({code}) {change:+.1f}%")
-                    result.append(f"   买入{shares}股 | {strategy}")
-                    result.append(f"   止损{stop_loss} | 现价{price}")
+                    result.append(f"#{i} {name}({code}) {change:+.1f}%{risk_warn}")
+                    result.append(f"   → 买入{shares}股（约{buy_value}元）")
+                    result.append(f"   策略: {strategy} | 止损: {stop_loss}元")
                     result.append(f"   原因: {reason}")
+                    result.append(f"   📌 以市价立即买入！")
 
                     # 记录到回测系统和仓位状态
                     if backtest and shares > 0:
@@ -454,159 +549,446 @@ def analyze_aggressive_fund(stocks_data, report_type):
             else:
                 result.append("")
                 result.append("❌ 今日无合适标的")
+                result.append("   建议空仓观望，等待机会")
         else:
             result.append("⚠️ 扫描器未加载")
 
-        result.append("")
-        result.append("📌 激进资金节奏:")
-        result.append("⚡ 早盘: 找机会建仓")
-        result.append("⏰ 午盘: 检查仓位")
-        result.append("🌙 收盘: 复盘不动手")
+            # 激进资金节奏提醒
+            result.append("")
+            result.append("📌 激进资金节奏:")
+            result.append("⚡ 早盘: 找机会建仓")
+            result.append("⏰ 午盘: 检查仓位")
+            result.append("🌙 收盘: 复盘不动手")
 
     elif report_type == "午盘":
         result.append(f"📊 市场: {market}市")
 
-        # ========== 显示当前仓位状态 ==========
+        # ========== 【核心】先检查持仓股的止盈/止损 ==========
         if position_state:
             positions = position_state.get_positions()
             today_actions = position_state.get_today_actions()
             
             if positions:
-                invested = sum(p["price"] * p["shares"] for p in positions)
-                result.append(f"📦 激进仓位: {len(positions)}只 | 约{int(invested)}元")
-
-            if today_actions:
-                for a in today_actions:
-                    result.append(f"✅ {a['type']}: {a['detail']}")
-
-        # 午盘再扫一次全市场
-        if market_scanner:
-            print("[激进资金] 午盘全市场扫描...")
-            market_targets = market_scanner.scan_aggressive_targets(market)
-
-            # 筛选可买标的
-            buy_targets = []
-            for t in market_targets:
-                change = t.get("change_pct", 0)
-                price = t.get("price", 0)
-                code = t.get("code", "")
-                
-                if price <= 0:
-                    continue
-                
-                # ========== 检查仓位状态 ==========
-                if position_state:
-                    should_skip, skip_reason = position_state.should_avoid_conflict("建仓", code)
-                    if should_skip:
-                        continue
-                
-                if 0 <= change <= 6:
-                    buy_targets.append((t, "追涨", int(10000 / price)))
-                elif -6 <= change < -3:
-                    buy_targets.append((t, "超跌反弹", int(10000 / price)))
-                elif 6 < change < 9.5:
-                    buy_targets.append((t, "轻仓", int(3000 / price)))
-
-            if buy_targets:
                 result.append("")
-                result.append("🔥 【午盘推荐】:")
-
-                for i, (t, strategy, shares) in enumerate(buy_targets[:1], 1):
-                    name = t.get("name", "未知")
-                    code = t.get("code", "")
-                    price = t.get("price", 0)
-                    change = t.get("change_pct", 0)
-
-                    stop_loss = round(price * 0.97, 2)
-                    result.append(f"#{i} {name}({code}) {change:+.1f}%")
-                    result.append(f"   → 买入{shares}股 | {strategy} | 止损:{stop_loss}")
-
-                    if backtest and shares > 0:
-                        t["price"] = price
-                        record_recommendation(name, code, t, strategy, f"午盘{strategy}", "午盘")
-                        position_state.add_position(code, name, price, shares, strategy, f"午盘{strategy}")
+                result.append("💼 【激进资金持仓检查】")
+                
+                has_action_today = False  # 今天是否已有操作
+                for p in positions:
+                    code = p["stock_code"]
+                    name = p["stock_name"]
+                    buy_price = p["price"]
+                    shares = p["shares"]
+                    buy_time = p.get("buy_time", "")
+                    
+                    # 检查今天是否已对这个股票操作过
+                    already_actioned = False
+                    for a in today_actions:
+                        if code in str(a.get("detail", "")):
+                            already_actioned = True
+                            break
+                    
+                    # 获取实时价格
+                    try:
+                        data = get_stock_price(code)
+                        if data and data.get("price"):
+                            current_price = data["price"]
+                            profit_pct = (current_price - buy_price) / buy_price * 100
+                            
+                            if already_actioned:
+                                # 今天已操作过，只显示状态
+                                result.append("")
+                                result.append(f"📌 {name}({code}) {shares}股")
+                                result.append(f"   成本{buy_price} → 现价{current_price} ({profit_pct:+.1f}%)")
+                                result.append(f"   → 今日已操作，继续持有")
+                            else:
+                                # 止盈检查：涨超5%
+                                if profit_pct >= 5:
+                                    sell_shares = shares // 2  # 卖一半
+                                    sell_value = int(sell_shares * current_price)
+                                    keep_shares = shares - sell_shares
+                                    result.append("")
+                                    result.append(f"🎯 【{name}({code}) 止盈！】")
+                                    result.append(f"   成本 {buy_price} → 现价 {current_price} ({profit_pct:+.1f}%)")
+                                    result.append(f"   → 【卖半仓】立即卖出 {sell_shares} 股（约 {sell_value} 元）")
+                                    result.append(f"   → 剩余 {keep_shares} 股继续持有")
+                                    position_state.reduce_position(code, f"止盈+{profit_pct:.1f}%")
+                                    has_action_today = True
+                                # 止损检查：跌超3%
+                                elif profit_pct <= -3:
+                                    sell_value = int(shares * current_price)
+                                    result.append("")
+                                    result.append(f"🚨 【{name}({code}) 必须止损！】")
+                                    result.append(f"   成本 {buy_price} → 现价 {current_price}")
+                                    result.append(f"   持仓亏损: {profit_pct:+.1f}%")
+                                    result.append(f"   → 【卖全仓】立即全部卖出 {shares} 股（约 {sell_value} 元）")
+                                    result.append(f"   ⚠️ 严格执行止损纪律！")
+                                    position_state.close_position(code, f"止损{profit_pct:.1f}%")
+                                    has_action_today = True
+                                # 正常持有
+                                else:
+                                    result.append("")
+                                    result.append(f"📌 {name}({code}) {shares}股")
+                                    result.append(f"   成本{buy_price} → 现价{current_price} ({profit_pct:+.1f}%)")
+                                    result.append(f"   → 继续持有观望")
+                    except Exception as e:
+                        result.append(f"   {name}: 价格获取失败")
+            
+            # 今日操作总结
+            if today_actions:
+                result.append("")
+                result.append("📋 今日已操作:")
+                for a in today_actions:
+                    t = a.get("time", "")
+                    ty = a.get("type", "")
+                    d = a.get("detail", "")
+                    result.append(f"   [{t}] {ty}: {d}")
+        
+        # ========== 检查是否已建仓过 ==========
+        if position_state:
+            positions = position_state.get_positions()
+            if len(positions) >= 2:
+                result.append("")
+                result.append("⚠️ 午盘：已有2只持仓，暂不追新")
             else:
-                result.append("❌ 午盘无机会，3万不动")
+                # 午盘再扫一次全市场
+                if market_scanner:
+                    market_targets = market_scanner.scan_aggressive_targets(market)
+                    buy_targets = []
+                    for t in market_targets:
+                        change = t.get("change_pct", 0)
+                        price = t.get("price", 0)
+                        code = t.get("code", "")
+                        
+                        if price <= 0:
+                            continue
+                        
+                        # 检查仓位状态
+                        if position_state:
+                            should_skip, skip_reason = position_state.should_avoid_conflict("建仓", code)
+                            if should_skip:
+                                continue
+                        
+                        if 0 <= change <= 6:
+                            buy_targets.append((t, "追涨", int(10000 / price)))
+                        elif -6 <= change < -3:
+                            buy_targets.append((t, "超跌反弹", int(10000 / price)))
+                        elif 6 < change < 9.5:
+                            buy_targets.append((t, "轻仓", int(3000 / price)))
+
+                    if buy_targets:
+                        result.append("")
+                        result.append("🔥 【午盘新机会】:")
+                        for i, (t, strategy, shares) in enumerate(buy_targets[:1], 1):
+                            name = t.get("name", "未知")
+                            code = t.get("code", "")
+                            price = t.get("price", 0)
+                            change = t.get("change_pct", 0)
+                            stop_loss = round(price * 0.97, 2)
+                            buy_value = int(shares * price)
+                            risk_warn = " ⚠️ 涨幅已高！" if change >= 9 else ""
+                            result.append(f"#{i} {name}({code}) {change:+.1f}%{risk_warn}")
+                            result.append(f"   → 买入{shares}股（约{buy_value}元）| 止损:{stop_loss}元")
+                            result.append(f"   📌 以市价立即买入！")
+
+                            if backtest and shares > 0:
+                                t["price"] = price
+                                record_recommendation(name, code, t, strategy, f"午盘{strategy}", "午盘")
+                                position_state.add_position(code, name, price, shares, strategy, f"午盘{strategy}")
+                else:
+                    result.append("❌ 午盘无新机会")
 
         result.append("")
-        result.append("⏰ 14:37 尾盘不复盘，只复盘！")
+        result.append("⏰ 14:37 收盘不复盘，只复盘！")
+
+    elif report_type == "盘中":
+        result.append(f"📊 市场: {market}市")
+
+        # ========== 盘中：检查持仓 + 找盘中机会 ==========
+        if position_state:
+            positions = position_state.get_positions()
+            today_actions = position_state.get_today_actions()
+
+            # 【核心】先检查持仓股的止盈/止损
+            if positions:
+                result.append("")
+                result.append("💼 【激进资金持仓检查】")
+
+                has_action_today = False
+                for p in positions:
+                    code = p["stock_code"]
+                    name = p["stock_name"]
+                    buy_price = p["price"]
+                    shares = p["shares"]
+
+                    # 检查今天是否已操作
+                    already_actioned = False
+                    for a in today_actions:
+                        if code in str(a.get("detail", "")):
+                            already_actioned = True
+                            break
+
+                    # 获取实时价格
+                    try:
+                        data = get_stock_price(code)
+                        if data and data.get("price"):
+                            current_price = data["price"]
+                            profit_pct = (current_price - buy_price) / buy_price * 100
+
+                            if already_actioned:
+                                result.append("")
+                                result.append(f"📌 {name}({code}) {shares}股")
+                                result.append(f"   成本{buy_price} → 现价{current_price} ({profit_pct:+.1f}%)")
+                                result.append(f"   → 今日已操作，继续持有")
+                            else:
+                                # 止盈：涨超5%
+                                if profit_pct >= 5:
+                                    sell_shares = shares // 2
+                                    sell_value = int(sell_shares * current_price)
+                                    keep_shares = shares - sell_shares
+                                    result.append("")
+                                    result.append(f"🎯 【{name}({code}) 止盈！】")
+                                    result.append(f"   成本 {buy_price} → 现价 {current_price} ({profit_pct:+.1f}%)")
+                                    result.append(f"   → 【卖半仓】立即卖出 {sell_shares} 股（约 {sell_value} 元）")
+                                    result.append(f"   → 剩余 {keep_shares} 股继续持有")
+                                    position_state.reduce_position(code, f"止盈+{profit_pct:.1f}%")
+                                    has_action_today = True
+                                # 止损：跌超3%
+                                elif profit_pct <= -3:
+                                    sell_value = int(shares * current_price)
+                                    result.append("")
+                                    result.append(f"🚨 【{name}({code}) 必须止损！】")
+                                    result.append(f"   成本 {buy_price} → 现价 {current_price}")
+                                    result.append(f"   持仓亏损: {profit_pct:+.1f}%")
+                                    result.append(f"   → 【卖全仓】立即全部卖出 {shares} 股（约 {sell_value} 元）")
+                                    result.append(f"   ⚠️ 严格执行止损纪律！")
+                                    position_state.close_position(code, f"止损{profit_pct:.1f}%")
+                                    has_action_today = True
+                                # 正常持有
+                                else:
+                                    result.append("")
+                                    result.append(f"📌 {name}({code}) {shares}股")
+                                    result.append(f"   成本{buy_price} → 现价{current_price} ({profit_pct:+.1f}%)")
+                                    result.append(f"   → 继续持有")
+                                    # 盘中可以考虑加仓
+                                    if profit_pct >= 2 and len(positions) < 2:
+                                        add_shares = int(5000 / current_price)
+                                        if add_shares > 0:
+                                            result.append(f"   → 【可考虑加仓】{add_shares}股（约{int(add_shares*current_price)}元）")
+                    except Exception as e:
+                        result.append(f"   {name}: 价格获取失败")
+
+            # 今日操作总结
+            if today_actions:
+                result.append("")
+                result.append("📋 今日已操作:")
+                for a in today_actions:
+                    t = a.get("time", "")
+                    ty = a.get("type", "")
+                    d = a.get("detail", "")
+                    result.append(f"   [{t}] {ty}: {d}")
+
+        # ========== 盘中找机会（条件更严格）==========
+        if position_state:
+            positions = position_state.get_positions()
+            if len(positions) >= 2:
+                result.append("")
+                result.append("⚠️ 盘中：已有2只持仓，暂不追新")
+            else:
+                if market_scanner:
+                    market_targets = market_scanner.scan_aggressive_targets(market)
+                    buy_targets = []
+                    for t in market_targets:
+                        change = t.get("change_pct", 0)
+                        price = t.get("price", 0)
+                        code = t.get("code", "")
+
+                        if price <= 0:
+                            continue
+
+                        # 检查仓位状态
+                        if position_state:
+                            should_skip, skip_reason = position_state.should_avoid_conflict("建仓", code)
+                            if should_skip:
+                                continue
+
+                        # 盘中条件更严格：涨幅0-4%
+                        if 0 <= change <= 4:
+                            buy_targets.append((t, "追涨", int(10000 / price)))
+                        elif -5 <= change < -2:
+                            buy_targets.append((t, "超跌反弹", int(8000 / price)))
+
+                    if buy_targets:
+                        result.append("")
+                        result.append("🔥 【盘中机会】:")
+                        for i, (t, strategy, shares) in enumerate(buy_targets[:1], 1):
+                            name = t.get("name", "未知")
+                            code = t.get("code", "")
+                            price = t.get("price", 0)
+                            change = t.get("change_pct", 0)
+                            stop_loss = round(price * 0.97, 2)
+                            buy_value = int(shares * price)
+                            result.append(f"#{i} {name}({code}) {change:+.1f}%")
+                            result.append(f"   → 买入{shares}股（约{buy_value}元）| 止损:{stop_loss}元")
+                            result.append(f"   📌 以市价买入")
+
+                            if backtest and shares > 0:
+                                t["price"] = price
+                                record_recommendation(name, code, t, strategy, f"盘中{strategy}", "盘中")
+                                position_state.add_position(code, name, price, shares, strategy, f"盘中{strategy}")
+                    else:
+                        result.append("❌ 盘中无合适机会")
+
+        result.append("")
+        result.append("⏰ 12:30 午盘继续检查仓位")
+        result.append("⏰ 14:37 收盘不复盘，只复盘！")
 
     else:  # 收盘
         result.append(f"📊 今日市场: {market}市")
 
-        # ========== 激进资金今日总结 ==========
+        # ========== 【核心】收盘前最后一次检查止盈/止损 ==========
         if position_state:
             positions = position_state.get_positions()
             today_actions = position_state.get_today_actions()
             
             result.append("")
-            result.append("💼 【激进资金收盘状态】")
+            result.append("💼 【激进资金收盘检查】")
 
             if positions:
-                invested = sum(p["price"] * p["shares"] for p in positions)
-                result.append(f"📦 持仓{len(positions)}只 | 约{int(invested)}元")
                 for p in positions:
-                    result.append(f"   {p['stock_name']}({p['stock_code']}) {p['shares']}股")
-            else:
-                result.append("📭 今日空仓")
-
+                    code = p["stock_code"]
+                    name = p["stock_name"]
+                    buy_price = p["price"]
+                    shares = p["shares"]
+                    
+                    # 检查今天是否已操作过
+                    already_actioned = False
+                    for a in today_actions:
+                        if code in str(a.get("detail", "")):
+                            already_actioned = True
+                            break
+                    
+                    # 获取实时价格
+                    try:
+                        data = get_stock_price(code)
+                        if data and data.get("price"):
+                            current_price = data["price"]
+                            profit_pct = (current_price - buy_price) / buy_price * 100
+                            
+                            if already_actioned:
+                                # 今天已操作过
+                                result.append("")
+                                result.append(f"📌 {name}({code}) {shares}股")
+                                result.append(f"   {buy_price} → {current_price} ({profit_pct:+.1f}%)")
+                                result.append(f"   → 今日已操作，明日继续持有")
+                            elif profit_pct >= 5:
+                                # 止盈
+                                sell_shares = shares // 2
+                                sell_value = int(sell_shares * current_price)
+                                result.append("")
+                                result.append(f"🎯 【{name}({code}) 今日止盈！】")
+                                result.append(f"   {buy_price} → {current_price} ({profit_pct:+.1f}%)")
+                                result.append(f"   → 明日开盘卖出 {sell_shares} 股（约{sell_value}元）")
+                                result.append(f"   → 剩余 {shares - sell_shares} 股继续持有")
+                            elif profit_pct <= -3:
+                                # 止损
+                                sell_value = int(shares * current_price)
+                                result.append("")
+                                result.append(f"🚨 【{name}({code}) 必须止损！】")
+                                result.append(f"   {buy_price} → {current_price} ({profit_pct:+.1f}%)")
+                                result.append(f"   → 明日开盘全部卖出 {shares} 股（约{sell_value}元）")
+                                result.append(f"   ⚠️ 严格执行纪律！")
+                            else:
+                                # 正常
+                                result.append("")
+                                result.append(f"📌 {name}({code}) {shares}股")
+                                result.append(f"   {buy_price} → {current_price} ({profit_pct:+.1f}%)")
+                                result.append(f"   → 明日继续持有观望")
+                    except Exception as e:
+                        result.append(f"   {name}: 价格获取失败")
+            
+            # 今日操作总结
             if today_actions:
                 result.append("")
-                result.append("📋 今日操作:")
+                result.append("📋 今日操作记录:")
                 for a in today_actions:
-                    result.append(f"   {a['type']}: {a['detail']}")
+                    t = a.get("time", "")
+                    ty = a.get("type", "")
+                    d = a.get("detail", "")
+                    result.append(f"   [{t}] {ty}: {d}")
+            else:
+                result.append("")
+                result.append("📋 今日操作: 无操作")
         
-        # 持仓今日涨跌
-        result.append("")
-        result.append("📊 【持仓今日涨跌】")
-        for i, (name, code, data) in enumerate(sorted_stocks[:5], 1):
-            if data:
-                arrow = "🔴" if data["change_pct"] > 0 else "🟢"
-                result.append(f"  {i}. {arrow} {name}: {data['change_pct']:+.1f}%")
-
-        total = sum([d["change_pct"] for _, _, d in sorted_stocks if d])
-        if total > 0:
-            result.append(f"  → 整体 +{total:.1f}%")
-        else:
-            result.append(f"  → 整体 {total:.1f}%")
-
         # 明日计划
         result.append("")
         result.append("🌙 【明日激进资金计划】")
-
-        if market_scanner:
-            market_targets = market_scanner.scan_aggressive_targets(market)
-            if market_targets:
-                # 找明日可能有潜力的
-                good_tomorrow = [t for t in market_targets if -3 <= t.get("change_pct", 0) <= 5]
-                if good_tomorrow:
-                    for i, t in enumerate(good_tomorrow[:2], 1):
-                        result.append(f"  #{i} {t.get('name')}({t.get('code')}) {t.get('change_pct', 0):+.1f}%")
-                        result.append(f"     {t.get('strategy', '')}")
-                else:
-                    result.append("  暂无明确机会，等信号")
+        if position_state:
+            positions = position_state.get_positions()
+            if not positions:
+                result.append("   激进资金空仓，明日可建仓")
+            elif len(positions) < 2:
+                result.append(f"   激进资金半仓({len(positions)}只)，明日可继续建仓")
             else:
-                result.append("  暂无明确机会")
-        else:
-            result.append("  无法预测")
-
+                result.append("   激进资金已满仓，明日以持仓为主")
+        
         result.append("")
-        result.append("⚠️ 核心纪律: 亏3%必须止损！")
+        result.append("⚠️ 核心纪律: 亏3%必须止损！涨5%卖一半！")
+        result.append("")
+        result.append("🔔 尾盘30分钟不建新仓！")
 
         # 回测统计
         if backtest:
             stats = backtest.analyze_performance()
             if "error" not in stats and stats.get("total_recommendations", 0) >= 3:
-                result.append(f"📊 策略胜率: {stats['win_rate']}%")
+                result.append(f"📊 当前策略胜率: {stats['win_rate']}%")
 
     return "\n".join(result)
 
+def is_trading_day():
+    """检查今天是否是交易日"""
+    now = datetime.now()
+    
+    # 1. 检查周末
+    if now.weekday() >= 5:  # 周六=5, 周日=6
+        return False, "今天是周末，休市"
+    
+    # 2. 检查主要节假日（硬编码，够用）
+    month_day = now.strftime("%m-%d")
+    holidays_2026 = [
+        "01-01",  # 元旦
+        "01-28", "01-29", "01-30", "01-31", "02-01", "02-02",  # 春节
+        "04-03", "04-04", "04-05",  # 清明
+        "05-01", "05-02", "05-03",  # 劳动节
+        "06-01",  # 端午
+        "09-03", "09-04", "09-05",  # 抗战纪念日
+        "10-01", "10-02", "10-03", "10-04", "10-05", "10-06", "10-07",  # 国庆
+    ]
+    
+    if month_day in holidays_2026:
+        return False, f"今天是法定节假日({month_day})，休市"
+    
+    return True, ""
+
 def generate_report(report_type="早盘"):
     """生成完整报告 - iPhone手机友好版"""
+    now = datetime.now()
+    
+    # ===== 检查是否为交易日 =====
+    is_trading, msg = is_trading_day()
+    if not is_trading:
+        title = f"📅 {now.strftime('%m/%d')} 非交易日"
+        content = [
+            f"❌ {msg}",
+            "",
+            "📌 明天正常交易时段再见",
+            "💼 持仓股继续持有",
+            f"🕐 {now.strftime('%H:%M:%S')}"
+        ]
+        return title, "\n".join(content)
+    
     # 先追踪之前的推荐
     track_recommendations()
 
-    now = datetime.now()
     title = f"📈 {report_type}建议 {now.strftime('%m/%d %H:%M')}"
 
     content = []
